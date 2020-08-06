@@ -114,11 +114,40 @@ kill_other_instance
 echo $MY_PID > $PIDFILE
 
 while true; do
+	# learn gateway IP for connection monitoring
+	GW=$( netstat -rn -f inet | grep ^default | awk '{ print $2 }' )
+	if [ -z "$GW" ]; then 
+		log "ERROR:  Network gateway not determinable. Sleeping..."
+		sleep 10
+		break
+	fi
+
 	log "Starting spotifyd ($SPOTIFYD)"	
-	$SPOTIFYD --no-daemon | tee -a $LOGFILE
 
-	# it crashed :(
+	# let's run inside subshell so we can remain and monitor
+	( $SPOTIFYD --no-daemon 2>&1 | tee -a $LOGFILE )&
+
+	SUBSHELL_PID=$!
+	log "spotifyd running inside subshell, PID=$SUBSHELL_PID"
+
+	while true; do 
+		if ! ps -p $SUBSHELL_PID >/dev/null; then
+			log "Subshell has died, cleaning up for restart."
+			kill_spotifyd
+			break
+		fi	
+
+		ping -c1 -W2 $GW >/dev/null
+		if [ $? -ne 0 ]; then
+			log "ERROR:  Ping check of gateway $GW has failed, assuming loss of Internet connectivity."
+			kill_spotifyd
+			kill $SUBSHELL_PID
+			break
+		fi
+
+		sleep 2
+	done
+
 	log "ERROR:  $SPOTIFYD appears to have crashed; will restart in a moment."
-
 	sleep 1
 done
